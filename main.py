@@ -70,7 +70,7 @@ def go_thread():
     
 # add a button widget and configure with the call back
 
-button = Button(label="Run the Animation")
+button = Button(label="Run the Animation",button_type="success")
 button.on_click(go_thread)
 
 # put the button and plot in a layout and add to the document
