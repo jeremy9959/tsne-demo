@@ -1,4 +1,5 @@
 # myapp.py
+# deplyed as tsne-demo
 from functools import partial
 from threading import Thread
 import pandas as pd
