@@ -1,27 +1,14 @@
 ![tsne_plot](https://github.com/jeremy9959/tsne-demo/png/tsne_plot.png)
 
-To Do:
+# tSNE animation
 
-- use builtin torch primitives and automatic differentiation for optimization step. (seems to work)
-- pass a parameter dictionary and set parameters "all at once":
-	- perplexity tolerance
-	- perplexity goal
-	- PCA dims
-	- device
-	
-	- initial l2 parameter
-	- l2 decay factor
-	- l2 decay period
+This is a bokeh/python/pytorch based implementation of the tsne algorithm, derived from the python implementation
+given on Van der Maaten's  [tSNE webpage](https://lvdmaaten.github.io/tsne/).
 
-	- learning rate (and perhaps learning rate decay)
-	- momentum
-	- max_iter
-  
-- port to a bokeh server app 
-- change the legend structure so you can click to highlight particular values of the legend; move the legend otuside the plot body
-- add widgets to report/adjust parameters 
-- allow for other data sets
-- deploy
+Download the repo, change to its directory, and then run it using the bokeh server.
 
-Along the way, refactor the code to clean things up.
+```
+$ bokeh serve .
+```
 
+Then open a browser that is pointed to ```http://localhost:5006``` and push the go button.
