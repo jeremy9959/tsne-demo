@@ -1,4 +1,4 @@
-![tsne_plot](https://github.com/jeremy9959/tsne-demo/png/tsne_plot.png)
+![tsne_plot](https://github.com/jeremy9959/tsne-demo/blob/master/png/tsne_plot.png)
 
 # tSNE animation
 
