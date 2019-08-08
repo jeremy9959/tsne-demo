@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from threading import Thread
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor
+from bokeh.document import without_document_lock
 from bokeh.plotting import figure, curdoc
 from bokeh.models import ColumnDataSource, Button, Label
 from bokeh.layouts import column, row, gridplot, widgetbox
@@ -13,9 +15,10 @@ import high_dim
 from util import dist_matrix
 
 go_flag = False
+executor = ThreadPoolExecutor(max_workers=1)
 
 
-def setup_graph(max_iter):
+def setup_graph(device, max_iter):
 
     tsne_source = ColumnDataSource(pd.DataFrame(columns=['x', 'y', 'color']))
     loss_source = ColumnDataSource(pd.DataFrame(columns=['iteration', 'loss']))
@@ -23,10 +26,12 @@ def setup_graph(max_iter):
     TOOLTIPS = [("label", "@color")]
 
     doc = curdoc()
-
-    p = figure(width=600, height=600, match_aspect=True, tooltips=TOOLTIPS, name="tsne_graph")
-    q = figure(width=600, height=200, name="loss_graph", x_range=(0, max_iter),  title="Loss vs iterations", tools="save")
-
+    title = "tSNE on 2500 MNIST digits using {} device".format(device)
+    p = figure(width=600, height=600, match_aspect=True, tooltips=TOOLTIPS, name="tsne_graph", title=title, x_range=(-1.5, 1.5), y_range=(-1.5, 1.5))
+    p.title.align="center"
+    q = figure(width=600, height=200, name="loss_graph", x_range=(0, max_iter), y_range=(0, 15), title="Loss vs iterations", tools="save", title_location="below")
+    q.title.align="center"
+    
     r = p.circle(
         x="x",
         y="y",
@@ -42,12 +47,12 @@ def setup_graph(max_iter):
     p.legend.location = "top_center"
     p.legend.orientation = "horizontal"
 
-    notice = Label(x=50, y=300, x_units='screen', y_units='screen', render_mode='css', text="Press the Go button when ready", name='notice', text_color='green' )
+    notice = Label(x=50, y=300, x_units='screen', y_units='screen', text="Thinking...", name='notice', text_color='red')
     p.add_layout(notice)
     
-    button = Button(label="Go!", button_type="success", name="go_button")
+    button = Button(label="Computing Distances in Feature Space", button_type="success", name="go_button", disabled=True)
     button.on_click(lambda: print("not ready yet"))
-    doc.add_root(column(button, p, q))
+    doc.add_root(column(p, button,  q))
 
     return doc
 
@@ -59,7 +64,8 @@ def update_graph(doc, Y, labels=None):
         labels = np.zeros(Y.shape[0])
 
     data = Y.clone().detach().cpu().numpy()
-    D = pd.DataFrame({"x": data[:, 0], "y": data[:, 1], "color": labels}).sort_values(
+    A = np.max(data)
+    D = pd.DataFrame({"x": data[:, 0]/A, "y": data[:, 1]/A, "color": labels}).sort_values(
         "color"
     )
     doc.get_model_by_name("tsne_glyphs").data_source.stream(D,rollover=data.shape[0])
@@ -147,6 +153,24 @@ def go_thread(doc, max_iter, P, mask, device):
         thread.start()
 
 
+@gen.coroutine
+def enable(doc, max_iter, P, mask, device):
+    
+    doc.get_model_by_name("go_button").on_click(partial(go_thread, doc, max_iter, P, mask,  device))
+    doc.get_model_by_name("go_button").disabled = False
+    doc.get_model_by_name("go_button").label = "Go!"
+    doc.get_model_by_name("notice").text = "Ready! Push the go button!"
+    
+@gen.coroutine
+@without_document_lock
+def compute_feature_matrix(doc, max_iter, X,  mask, device):
+    
+    P = yield executor.submit(partial(high_dim.pmatrix, X, pca_dims=50, tolerance=1e-5, perplexity=20, device=device))
+    doc.add_next_tick_callback(partial(enable, doc, max_iter, P, mask, device))
+
+
+
+        
 if torch.cuda.is_available():
     device = "cuda"
     print("Using cuda\n ")
@@ -158,18 +182,11 @@ labels = np.loadtxt("data/mnist2500_labels.txt")
 X = np.loadtxt("data/mnist2500_X.txt")
 X = torch.from_numpy(X).float().to(device)
 n = X.shape[0]
-
 max_iter = 1500
 L = [[(i != j) for i in range(n)] for j in range(n)]
 mask = torch.ByteTensor(L).to(device)
 
 print('at setup_graph call')
 
-doc = setup_graph(max_iter)
-
-
-doc.get_model_by_name("tsne_graph").title.text = "tSNE on 2500 MNIST digits"
-print('setup done')
-
-P = high_dim.pmatrix(X, pca_dims=50, tolerance=1e-5, perplexity=20, device=device)
-doc.get_model_by_name("go_button").on_click(partial(go_thread, doc, max_iter, P, mask,  device))
+doc = setup_graph(device, max_iter)
+compute_feature_matrix(doc, max_iter, X, mask, device)
