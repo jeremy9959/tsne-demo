@@ -1,4 +1,4 @@
-![tsne_plot](https://github.uconn.edu/jet08013/Experiments/blob/develop/Python/tsne/torch/tsne_plot.png)
+![tsne_plot](https://github.com/jeremy9959/tsne-demo/png/tsne_plot.png)
 
 To Do:
 
