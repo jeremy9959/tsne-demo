@@ -1,5 +1,5 @@
 import torch
-
+from functools import lru_cache
 
 def dist_matrix(Y):
     """
@@ -10,4 +10,10 @@ def dist_matrix(Y):
     num2 = torch.add(torch.add(num, sum_Y).t(), sum_Y)
     return num2
 
+@lru_cache(maxsize=4)
+def off_diag_mask(n, device):
 
+    L = [[(i != j) for i in range(n)] for j in range(n)]
+    mask = torch.ByteTensor(L).to(device)
+
+    return mask

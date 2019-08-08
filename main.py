@@ -12,9 +12,20 @@ from bokeh.palettes import Spectral10
 from tornado import gen
 from functools import partial
 import high_dim
-from util import dist_matrix
+from util import dist_matrix, off_diag_mask
+
+if torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
 
 executor = ThreadPoolExecutor(max_workers=1)
+
+labels = np.loadtxt("data/mnist2500_labels.txt")
+X = np.loadtxt("data/mnist2500_X.txt")
+X = torch.from_numpy(X).float().to(device)
+max_iter = 1500
+
 
 def setup_graph(device, max_iter):
 
@@ -58,7 +69,7 @@ def setup_graph(device, max_iter):
         name="tsne_glyphs",
     )
 
-    s = q.line(x="iteration", y="loss", source=loss_source, name="loss_glyphs")
+    s = q.line(x="iteration", y="loss", source=loss_source, name="loss_glyphs", line_width=3, line_color="red")
 
     p.legend.location = "top_center"
     p.legend.orientation = "horizontal"
@@ -80,11 +91,13 @@ def setup_graph(device, max_iter):
         name="go_button",
         disabled=True,
     )
-    button.on_click(lambda: print("not ready yet"))
+    button.on_click(no_op)
     doc.add_root(column(p, button, q))
 
     return doc
 
+def no_op():
+    pass
 
 @gen.coroutine
 def update_graph(doc, Y, labels=None):
@@ -118,24 +131,24 @@ def wrap(doc):
 
 
 
-def KL_loss(P, Y, mask, device="cpu", l2=1):
+def KL_loss(P, Y, device="cpu", l2=1):
 
+    n = Y.shape[0]
     D = dist_matrix(Y)
     L2 = D.sum()
     num = 1.0 / (1.0 + D)
-    # diag set to zero
+    mask = off_diag_mask(n, device)
     numU = torch.masked_select(num, mask)
-
     Q = numU / numU.sum()
     PU = torch.masked_select(P, mask)
-    # Q = torch.max(Q, torch.tensor([1e-12], device=device))
+
     return (PU * (torch.log(PU / Q))).sum() + l2 * torch.log(L2)
 
 
-def advance(doc, max_iter, P, mask, device):
+def advance(doc, max_iter, P, device):
 
-    Y = torch.randn(n, 2, device=device, requires_grad=True)
-    l2 = 1
+    Y = torch.randn(P.shape[0], 2, device=device, requires_grad=True)
+    l2 = 2
 
     doc.add_next_tick_callback(partial(update_graph, doc, Y, labels))
 
@@ -145,7 +158,7 @@ def advance(doc, max_iter, P, mask, device):
 
     for iter in range(max_iter):
 
-        E = KL_loss(P, Y, mask, device, l2=l2)
+        E = KL_loss(P, Y,  device, l2=l2)
         E.backward()
 
         doc.add_next_tick_callback(partial(update_graph, doc, Y, labels))
@@ -153,23 +166,17 @@ def advance(doc, max_iter, P, mask, device):
         optimizer.step()
         scheduler.step()
 
-        if (iter % 100) == 0:
-            if l2 > 0.01:
-                l2 = l2 * 0.5
-            else:
-                l2 = 0
+        if l2 > 0.01:
+            l2 = l2 * 0.95
+        else:
+            l2 = 0
 
-            print(
-                "Loss after {} steps is {}; l2 parameter is {}".format(
-                    iter, E.item(), l2
-                )
-            )
         optimizer.zero_grad()
 
     doc.add_next_tick_callback(partial(wrap, doc))
 
 
-def go_thread(doc, max_iter, P, mask, device):
+def go_thread(doc, max_iter, P, device):
 
     if not doc.get_model_by_name("go_button").disabled:
         doc.get_model_by_name("notice").visible = False
@@ -178,15 +185,15 @@ def go_thread(doc, max_iter, P, mask, device):
         )
         doc.get_model_by_name("go_button").label = "Starting..."
         doc.get_model_by_name("go_button").disabled = True
-        thread = Thread(target=partial(advance, doc, max_iter, P, mask, device))
+        thread = Thread(target=partial(advance, doc, max_iter, P, device))
         thread.start()
 
 
 @gen.coroutine
-def enable(doc, max_iter, P, mask, device):
+def enable(doc, max_iter, P, device):
 
     doc.get_model_by_name("go_button").on_click(
-        partial(go_thread, doc, max_iter, P, mask, device)
+        partial(go_thread, doc, max_iter, P,  device)
     )
     doc.get_model_by_name("go_button").disabled = False
     doc.get_model_by_name("go_button").label = "Go!"
@@ -195,7 +202,7 @@ def enable(doc, max_iter, P, mask, device):
 
 @gen.coroutine
 @without_document_lock
-def compute_feature_matrix(doc, max_iter, X, mask, device):
+def compute_feature_matrix(doc, max_iter, X,  device):
 
     P = yield executor.submit(
         partial(
@@ -207,21 +214,15 @@ def compute_feature_matrix(doc, max_iter, X, mask, device):
             device=device,
         )
     )
-    doc.add_next_tick_callback(partial(enable, doc, max_iter, P, mask, device))
+    doc.add_next_tick_callback(partial(enable, doc, max_iter, P,  device))
 
 
-if torch.cuda.is_available():
-    device = "cuda"
-else:
-    device = "cpu"
 
-labels = np.loadtxt("data/mnist2500_labels.txt")
-X = np.loadtxt("data/mnist2500_X.txt")
-X = torch.from_numpy(X).float().to(device)
-n = X.shape[0]
-max_iter = 1500
-L = [[(i != j) for i in range(n)] for j in range(n)]
-mask = torch.ByteTensor(L).to(device)
 
 doc = setup_graph(device, max_iter)
-compute_feature_matrix(doc, max_iter, X, mask, device)
+
+# compute the distance matrix asynchronously so the server
+# can draw the graph.  When this process finishes, the go button
+# is enabled and the user can start the animation.
+
+compute_feature_matrix(doc, max_iter, X, device)
