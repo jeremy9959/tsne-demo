@@ -5,8 +5,9 @@ import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from bokeh.document import without_document_lock
 from bokeh.plotting import figure, curdoc
-from bokeh.models import ColumnDataSource, Button, Label
-from bokeh.layouts import column
+from bokeh.models import ColumnDataSource, Button, Label, Slider
+from bokeh.models.ranges import Range1d
+from bokeh.layouts import column, widgetbox, row, Spacer
 from bokeh.transform import linear_cmap
 from bokeh.palettes import Spectral10
 from tornado import gen
@@ -25,17 +26,19 @@ labels = np.loadtxt("data/mnist2500_labels.txt")
 X = np.loadtxt("data/mnist2500_X.txt")
 X = torch.from_numpy(X).float().to(device)
 max_iter = 1500
+doc = curdoc()
+doc.title = "tSNE Animation - Setting Up"
 
-
-def setup_graph(device, max_iter):
+def setup_graph():
+    global max_iter, device
 
     tsne_source = ColumnDataSource(pd.DataFrame(columns=["x", "y", "color"]))
     loss_source = ColumnDataSource(pd.DataFrame(columns=["iteration", "loss"]))
 
     TOOLTIPS = [("label", "@color")]
 
-    doc = curdoc()
     title = "tSNE on 2500 MNIST digits using {} device".format(device)
+
     p = figure(
         width=600,
         height=600,
@@ -90,18 +93,35 @@ def setup_graph(device, max_iter):
         button_type="success",
         name="go_button",
         disabled=True,
+        width=250
     )
     button.on_click(no_op)
-    doc.add_root(column(p, button, q))
 
-    return doc
+    slider = Slider(
+        start=500, end=5000, value=1500, step=100, title="Number of Iterations", name="iter_slider", width=250
+    )
+
+    slider.on_change("value", slider_callback)
+
+    doc.add_root(column(p, row(Spacer(width=175), widgetbox(button,  slider),Spacer(width=175)), q))
+
+    return 
+
 
 def no_op():
     pass
 
-@gen.coroutine
-def update_graph(doc, Y, labels=None):
 
+def slider_callback(attr, old, new):
+    global max_iter, doc
+
+    max_iter = int(new)
+    doc.get_model_by_name('loss_graph').x_range.end = max_iter
+    
+@gen.coroutine
+def update_graph(Y, labels=None):
+    global doc
+    
     if labels is None:
         labels = np.zeros(Y.shape[0])
 
@@ -114,9 +134,11 @@ def update_graph(doc, Y, labels=None):
 
 
 @gen.coroutine
-def update_title(doc, i, max, loss):
+def update_title(i,  loss):
+    global doc, max_iter
+    
     doc.get_model_by_name("go_button").label = "Iteration {}/{}     Loss {:.4f}".format(
-        i, max, loss
+        i, max_iter, loss
     )
     doc.get_model_by_name("loss_glyphs").data_source.stream(
         pd.DataFrame({"iteration": [i], "loss": [loss]})
@@ -124,15 +146,18 @@ def update_title(doc, i, max, loss):
 
 
 @gen.coroutine
-def wrap(doc):
-
+def wrap():
+    global doc
+    
     doc.get_model_by_name("go_button").label = "Go!"
     doc.get_model_by_name("go_button").disabled = False
+    doc.get_model_by_name("iter_slider").disabled = False
+    doc.title = "tSNE Animation - Ready"
 
-
-
-def KL_loss(P, Y, device="cpu", l2=1):
-
+    
+def KL_loss(P, Y,  l2=1):
+    global device
+    
     n = Y.shape[0]
     D = dist_matrix(Y)
     L2 = D.sum()
@@ -145,12 +170,13 @@ def KL_loss(P, Y, device="cpu", l2=1):
     return (PU * (torch.log(PU / Q))).sum() + l2 * torch.log(L2)
 
 
-def advance(doc, max_iter, P, device):
+def advance(P):
+    global max_iter, doc, device
 
     Y = torch.randn(P.shape[0], 2, device=device, requires_grad=True)
     l2 = 2
 
-    doc.add_next_tick_callback(partial(update_graph, doc, Y, labels))
+    doc.add_next_tick_callback(partial(update_graph, Y, labels))
 
     optimizer = torch.optim.SGD([Y], lr=500, momentum=0.8)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 100, 1)
@@ -158,11 +184,11 @@ def advance(doc, max_iter, P, device):
 
     for iter in range(max_iter):
 
-        E = KL_loss(P, Y,  device, l2=l2)
+        E = KL_loss(P, Y,  l2=l2)
         E.backward()
 
-        doc.add_next_tick_callback(partial(update_graph, doc, Y, labels))
-        doc.add_next_tick_callback(partial(update_title, doc, iter, max_iter, E.item()))
+        doc.add_next_tick_callback(partial(update_graph, Y, labels))
+        doc.add_next_tick_callback(partial(update_title, iter,  E.item()))
         optimizer.step()
         scheduler.step()
 
@@ -173,37 +199,43 @@ def advance(doc, max_iter, P, device):
 
         optimizer.zero_grad()
 
-    doc.add_next_tick_callback(partial(wrap, doc))
+    doc.add_next_tick_callback(wrap)
 
 
-def go_thread(doc, max_iter, P, device):
-
+def go_thread(P):
+    global max_iter, doc, device
+    
     if not doc.get_model_by_name("go_button").disabled:
+        doc.title = "tSNE Animation - Running"
         doc.get_model_by_name("notice").visible = False
         doc.get_model_by_name("loss_glyphs").data_source.stream(
             pd.DataFrame({"iteration": [np.nan], "loss": [np.nan]}), rollover=1
         )
         doc.get_model_by_name("go_button").label = "Starting..."
         doc.get_model_by_name("go_button").disabled = True
-        thread = Thread(target=partial(advance, doc, max_iter, P, device))
+        doc.get_model_by_name("iter_slider").disabled = True
+        thread = Thread(target=partial(advance, P))
         thread.start()
 
 
 @gen.coroutine
-def enable(doc, max_iter, P, device):
-
+def enable(P):
+    global max_iter, device
+    
     doc.get_model_by_name("go_button").on_click(
-        partial(go_thread, doc, max_iter, P,  device)
+        partial(go_thread, P)
     )
     doc.get_model_by_name("go_button").disabled = False
+    doc.get_model_by_name("iter_slider").disabled = False
     doc.get_model_by_name("go_button").label = "Go!"
     doc.get_model_by_name("notice").text = "Ready! Push the go button!"
-
+    doc.title = 'tSNE Animation - Ready'
 
 @gen.coroutine
 @without_document_lock
-def compute_feature_matrix(doc, max_iter, X,  device):
-
+def compute_feature_matrix(X):
+    global max_iter, device
+    
     P = yield executor.submit(
         partial(
             high_dim.pmatrix,
@@ -214,15 +246,13 @@ def compute_feature_matrix(doc, max_iter, X,  device):
             device=device,
         )
     )
-    doc.add_next_tick_callback(partial(enable, doc, max_iter, P,  device))
+    doc.add_next_tick_callback(partial(enable, P))
 
 
-
-
-doc = setup_graph(device, max_iter)
+setup_graph()
 
 # compute the distance matrix asynchronously so the server
 # can draw the graph.  When this process finishes, the go button
 # is enabled and the user can start the animation.
 
-compute_feature_matrix(doc, max_iter, X, device)
+compute_feature_matrix(X)
