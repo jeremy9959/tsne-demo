@@ -5,8 +5,7 @@ import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
 from bokeh.document import without_document_lock
 from bokeh.plotting import figure, curdoc
-from bokeh.models import ColumnDataSource, Button, Label, Slider
-from bokeh.models.ranges import Range1d
+from bokeh.models import ColumnDataSource, Button, Label, Slider, CDSView, BooleanFilter, CheckboxButtonGroup, Div
 from bokeh.layouts import column, widgetbox, row, Spacer
 from bokeh.transform import linear_cmap
 from bokeh.palettes import Spectral10
@@ -28,6 +27,8 @@ X = torch.from_numpy(X).float().to(device)
 max_iter = 1500
 doc = curdoc()
 doc.title = "tSNE Animation - Setting Up"
+filter_labels = [float(x) for x in range(10)]
+
 
 def setup_graph():
     global max_iter, device
@@ -38,6 +39,7 @@ def setup_graph():
     TOOLTIPS = [("label", "@color")]
 
     title = "tSNE on 2500 MNIST digits using {} device".format(device)
+
 
     p = figure(
         width=600,
@@ -54,6 +56,7 @@ def setup_graph():
         width=600,
         height=200,
         name="loss_graph",
+
         x_range=(0, max_iter),
         y_range=(0, 15),
         title="Loss vs iterations",
@@ -67,15 +70,22 @@ def setup_graph():
         y="y",
         fill_color=linear_cmap("color", palette=Spectral10, low=0, high=9),
         source=tsne_source,
-        legend="color",
+#        legend="color",
         size=5,
         name="tsne_glyphs",
     )
 
-    s = q.line(x="iteration", y="loss", source=loss_source, name="loss_glyphs", line_width=3, line_color="red")
+    s = q.line(
+        x="iteration",
+        y="loss",
+        source=loss_source,
+        name="loss_glyphs",
+        line_width=3,
+        line_color="red",
+    )
 
-    p.legend.location = "top_center"
-    p.legend.orientation = "horizontal"
+#    p.legend.location = "top_center"
+#    p.legend.orientation = "horizontal"
 
     notice = Label(
         x=50,
@@ -93,50 +103,72 @@ def setup_graph():
         button_type="success",
         name="go_button",
         disabled=True,
-        width=250
+        width=250,
     )
     button.on_click(no_op)
 
     slider = Slider(
-        start=500, end=5000, value=1500, step=100, title="Number of Iterations", name="iter_slider", width=250
+        start=500,
+        end=5000,
+        value=1500,
+        step=100,
+        title="Number of Iterations",
+        name="iter_slider",
+        width=250,
     )
 
     slider.on_change("value", slider_callback)
 
-    doc.add_root(column(p, row(Spacer(width=175), widgetbox(button,  slider),Spacer(width=175)), q))
+    cb = CheckboxButtonGroup(labels=[str(x) for x in range(10)], active=[], name="hide_buttons", orientation="horizontal", disabled=True)
+    cb.on_change("active", cb_trigger_callback)
 
-    return 
+    note = Div(text="<em>Click the buttons to focus the view</em>")
+    
+    doc.add_root(
+        column(
+            p, row(Spacer(width=75), widgetbox(button, slider,cb,note), Spacer(width=275)), q
+        )
+    )
+
+    return
 
 
 def no_op():
     pass
 
 
+def cb_trigger_callback(attr, old, new):
+
+    data = doc.get_model_by_name('tsne_glyphs').data_source.data
+    filter_bool = [(float(x) in new) for x in data['color']]
+    ds = doc.get_model_by_name('tsne_glyphs').data_source
+    doc.get_model_by_name('tsne_glyphs').view = CDSView(source=ds,filters=[BooleanFilter(filter_bool)])
+
+
 def slider_callback(attr, old, new):
     global max_iter, doc
 
     max_iter = int(new)
-    doc.get_model_by_name('loss_graph').x_range.end = max_iter
-    
+    doc.get_model_by_name("loss_graph").x_range.end = max_iter
+
+
 @gen.coroutine
-def update_graph(Y, labels=None):
-    global doc
-    
-    if labels is None:
-        labels = np.zeros(Y.shape[0])
+def update_graph(Y):
+    global doc, labels,filter_labels
 
     data = Y.clone().detach().cpu().numpy()
     A = np.max(data)
     D = pd.DataFrame(
         {"x": data[:, 0] / A, "y": data[:, 1] / A, "color": labels}
-    ).sort_values("color")
+    )#.sort_values("color")
+
     doc.get_model_by_name("tsne_glyphs").data_source.stream(D, rollover=data.shape[0])
 
 
 @gen.coroutine
-def update_title(i,  loss):
+def update_title(i, loss):
     global doc, max_iter
-    
+
     doc.get_model_by_name("go_button").label = "Iteration {}/{}     Loss {:.4f}".format(
         i, max_iter, loss
     )
@@ -148,16 +180,18 @@ def update_title(i,  loss):
 @gen.coroutine
 def wrap():
     global doc
-    
+
+#    doc.get_model_by_name("cb_trigger").disabled = False
+    doc.get_model_by_name("hide_buttons").disabled = False
     doc.get_model_by_name("go_button").label = "Go!"
     doc.get_model_by_name("go_button").disabled = False
     doc.get_model_by_name("iter_slider").disabled = False
     doc.title = "tSNE Animation - Ready"
 
-    
-def KL_loss(P, Y,  l2=1):
+
+def KL_loss(P, Y, l2=1):
     global device
-    
+
     n = Y.shape[0]
     D = dist_matrix(Y)
     L2 = D.sum()
@@ -171,12 +205,12 @@ def KL_loss(P, Y,  l2=1):
 
 
 def advance(P):
-    global max_iter, doc, device
+    global max_iter, doc, device, labels
 
     Y = torch.randn(P.shape[0], 2, device=device, requires_grad=True)
     l2 = 2
 
-    doc.add_next_tick_callback(partial(update_graph, Y, labels))
+    doc.add_next_tick_callback(partial(update_graph, Y))
 
     optimizer = torch.optim.SGD([Y], lr=500, momentum=0.8)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 100, 1)
@@ -184,11 +218,11 @@ def advance(P):
 
     for iter in range(max_iter):
 
-        E = KL_loss(P, Y,  l2=l2)
+        E = KL_loss(P, Y, l2=l2)
         E.backward()
 
-        doc.add_next_tick_callback(partial(update_graph, Y, labels))
-        doc.add_next_tick_callback(partial(update_title, iter,  E.item()))
+        doc.add_next_tick_callback(partial(update_graph, Y))
+        doc.add_next_tick_callback(partial(update_title, iter, E.item()))
         optimizer.step()
         scheduler.step()
 
@@ -204,10 +238,19 @@ def advance(P):
 
 def go_thread(P):
     global max_iter, doc, device
-    
+
     if not doc.get_model_by_name("go_button").disabled:
+
         doc.title = "tSNE Animation - Running"
+
+        doc.get_model_by_name("hide_buttons").disabled = True
+#        doc.get_model_by_name("cb_trigger").disabled = True
+        doc.get_model_by_name("hide_buttons").active = []
+
+        ds = doc.get_model_by_name('tsne_glyphs').data_source
+        doc.get_model_by_name('tsne_glyphs').view = CDSView(source=ds)
         doc.get_model_by_name("notice").visible = False
+
         doc.get_model_by_name("loss_glyphs").data_source.stream(
             pd.DataFrame({"iteration": [np.nan], "loss": [np.nan]}), rollover=1
         )
@@ -221,21 +264,21 @@ def go_thread(P):
 @gen.coroutine
 def enable(P):
     global max_iter, device
-    
-    doc.get_model_by_name("go_button").on_click(
-        partial(go_thread, P)
-    )
+
+
+    doc.get_model_by_name("go_button").on_click(partial(go_thread, P))
     doc.get_model_by_name("go_button").disabled = False
     doc.get_model_by_name("iter_slider").disabled = False
     doc.get_model_by_name("go_button").label = "Go!"
     doc.get_model_by_name("notice").text = "Ready! Push the go button!"
-    doc.title = 'tSNE Animation - Ready'
+    doc.title = "tSNE Animation - Ready"
+
 
 @gen.coroutine
 @without_document_lock
 def compute_feature_matrix(X):
     global max_iter, device
-    
+
     P = yield executor.submit(
         partial(
             high_dim.pmatrix,
