@@ -42,8 +42,8 @@ def setup_graph():
 
 
     p = figure(
-        width=600,
-        height=600,
+        width=700,
+        height=700,
         match_aspect=True,
         tooltips=TOOLTIPS,
         name="tsne_graph",
@@ -53,7 +53,7 @@ def setup_graph():
     )
     p.title.align = "center"
     q = figure(
-        width=600,
+        width=350,
         height=200,
         name="loss_graph",
 
@@ -70,7 +70,6 @@ def setup_graph():
         y="y",
         fill_color=linear_cmap("color", palette=Spectral10, low=0, high=9),
         source=tsne_source,
-#        legend="color",
         size=5,
         name="tsne_glyphs",
     )
@@ -79,13 +78,10 @@ def setup_graph():
         x="iteration",
         y="loss",
         source=loss_source,
-        name="loss_glyphs",
         line_width=3,
         line_color="red",
+        name="loss_glyphs",
     )
-
-#    p.legend.location = "top_center"
-#    p.legend.orientation = "horizontal"
 
     notice = Label(
         x=50,
@@ -103,32 +99,29 @@ def setup_graph():
         button_type="success",
         name="go_button",
         disabled=True,
-        width=250,
+        width=310, 
     )
     button.on_click(no_op)
 
     slider = Slider(
         start=500,
-        end=5000,
+        end=20000,
         value=1500,
         step=100,
         title="Number of Iterations",
         name="iter_slider",
-        width=250,
+        width=310,
     )
 
     slider.on_change("value", slider_callback)
 
-    cb = CheckboxButtonGroup(labels=[str(x) for x in range(10)], active=[], name="hide_buttons", orientation="horizontal", disabled=True)
+    cb = CheckboxButtonGroup(labels=[str(x) for x in range(10)], active=[], name="hide_buttons", orientation="horizontal", disabled=True, width=230)
     cb.on_change("active", cb_trigger_callback)
 
     note = Div(text="<em>Click the buttons to focus the view</em>")
     
-    doc.add_root(
-        column(
-            p, row(Spacer(width=75), widgetbox(button, slider,cb,note), Spacer(width=275)), q
-        )
-    )
+    doc.add_root(column(p, row(Spacer(width=20),widgetbox(button, slider,cb,note), q)))
+
 
     return
 
@@ -160,7 +153,7 @@ def update_graph(Y):
     A = np.max(data)
     D = pd.DataFrame(
         {"x": data[:, 0] / A, "y": data[:, 1] / A, "color": labels}
-    )#.sort_values("color")
+    )
 
     doc.get_model_by_name("tsne_glyphs").data_source.stream(D, rollover=data.shape[0])
 
@@ -181,7 +174,6 @@ def update_title(i, loss):
 def wrap():
     global doc
 
-#    doc.get_model_by_name("cb_trigger").disabled = False
     doc.get_model_by_name("hide_buttons").disabled = False
     doc.get_model_by_name("go_button").label = "Go!"
     doc.get_model_by_name("go_button").disabled = False
@@ -223,6 +215,7 @@ def advance(P):
 
         doc.add_next_tick_callback(partial(update_graph, Y))
         doc.add_next_tick_callback(partial(update_title, iter, E.item()))
+
         optimizer.step()
         scheduler.step()
 
@@ -244,19 +237,22 @@ def go_thread(P):
         doc.title = "tSNE Animation - Running"
 
         doc.get_model_by_name("hide_buttons").disabled = True
-#        doc.get_model_by_name("cb_trigger").disabled = True
         doc.get_model_by_name("hide_buttons").active = []
 
         ds = doc.get_model_by_name('tsne_glyphs').data_source
         doc.get_model_by_name('tsne_glyphs').view = CDSView(source=ds)
+
         doc.get_model_by_name("notice").visible = False
 
         doc.get_model_by_name("loss_glyphs").data_source.stream(
             pd.DataFrame({"iteration": [np.nan], "loss": [np.nan]}), rollover=1
         )
+
         doc.get_model_by_name("go_button").label = "Starting..."
         doc.get_model_by_name("go_button").disabled = True
+
         doc.get_model_by_name("iter_slider").disabled = True
+
         thread = Thread(target=partial(advance, P))
         thread.start()
 
